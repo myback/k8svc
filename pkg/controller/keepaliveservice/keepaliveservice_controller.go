@@ -5,7 +5,6 @@ import (
 	k8sv1alpha1 "github.com/myback/k8svc/pkg/apis/k8s/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -50,9 +49,15 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// TODO(user): Modify this to be the types you create that are owned by the primary resource
-	// Watch for changes to secondary resource Pods and requeue the owner KeepAliveService
-	err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.EnqueueRequestForOwner{
+	err = c.Watch(&source.Kind{Type: &corev1.Service{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &k8sv1alpha1.KeepAliveService{},
+	})
+	if err != nil {
+		return err
+	}
+
+	err = c.Watch(&source.Kind{Type: &corev1.Endpoints{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &k8sv1alpha1.KeepAliveService{},
 	})
@@ -82,7 +87,7 @@ type ReconcileKeepAliveService struct {
 // The Controller will requeue the Request to be processed again if the returned error is non-nil or
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *ReconcileKeepAliveService) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	//reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
+	reqLogger := log.WithValues("Request.Namespace", request.Namespace, "Request.Name", request.Name)
 
 	// Fetch the KeepAliveService data
 	k8SvcData := &k8sv1alpha1.KeepAliveService{}
@@ -104,15 +109,15 @@ func (r *ReconcileKeepAliveService) Reconcile(request reconcile.Request) (reconc
 		return reconcile.Result{}, err
 	}
 
-	//new Endpoint
-	newEndp := newEndpoint(name, k8SvcData)
-	if err := controllerutil.SetControllerReference(k8SvcData, newEndp, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
 	foundEndp := &corev1.Endpoints{}
-	err := r.client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: newEndp.Namespace}, foundEndp)
+	err := r.client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: request.Namespace}, foundEndp)
 	if err != nil && errors.IsNotFound(err) {
+		//new Endpoint
+		newEndp := newEndpoint(name, k8SvcData)
+		if err := controllerutil.SetControllerReference(k8SvcData, newEndp, r.scheme); err != nil {
+			return reconcile.Result{}, err
+		}
+
 		if err := r.client.Create(context.Background(), newEndp); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -121,15 +126,27 @@ func (r *ReconcileKeepAliveService) Reconcile(request reconcile.Request) (reconc
 		return reconcile.Result{}, err
 	}
 
-	//new Service
-	newSvc := newService(name, k8SvcData)
-	if err := controllerutil.SetControllerReference(k8SvcData, newSvc, r.scheme); err != nil {
-		return reconcile.Result{}, err
+	if foundEndp.Name != "" {
+		crdEndpSubs := keepAliveServiceEndpointSubsets(k8SvcData.Spec)
+		if !endpointsEqual(crdEndpSubs, foundEndp.Subsets) {
+			reqLogger.Info("Update endpoint state")
+			foundEndp.Subsets = crdEndpSubs
+
+			if err := r.client.Update(context.TODO(), foundEndp); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
 	}
 
 	foundSvc := &corev1.Service{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: newSvc.Namespace}, foundSvc)
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: request.Namespace}, foundSvc)
 	if err != nil && errors.IsNotFound(err) {
+		//new Service
+		newSvc := newService(name, k8SvcData)
+		if err := controllerutil.SetControllerReference(k8SvcData, newSvc, r.scheme); err != nil {
+			return reconcile.Result{}, err
+		}
+
 		if err := r.client.Create(context.TODO(), newSvc); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -139,66 +156,20 @@ func (r *ReconcileKeepAliveService) Reconcile(request reconcile.Request) (reconc
 		return reconcile.Result{}, err
 	}
 
-	//// Pod already exists - don't requeue
-	//reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
+	if foundSvc.Name != "" {
+		crdSvc := keepAliveServiceServiceSpec(k8SvcData.Spec)
+		if !serviceEqual(crdSvc, foundSvc.Spec) || crdSvc.Type != foundSvc.Spec.Type {
+			reqLogger.Info("Update service state")
+			foundSvc.Spec.Ports = crdSvc.Ports
+			foundSvc.Spec.Type = crdSvc.Type
+			foundSvc.Spec.Selector = crdSvc.Selector
+			foundSvc.Spec.ExternalIPs = crdSvc.ExternalIPs
+
+			if err := r.client.Update(context.TODO(), foundSvc); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
+	}
+
 	return reconcile.Result{}, nil
-}
-
-func newEndpoint(name string, cr *k8sv1alpha1.KeepAliveService) *corev1.Endpoints {
-	endpointAddrs := []corev1.EndpointAddress{}
-	endpointPorts := []corev1.EndpointPort{}
-
-	for _, host := range cr.Spec.Hosts {
-		endpointAddrs = append(endpointAddrs, corev1.EndpointAddress{IP: host})
-	}
-
-	for _, port := range cr.Spec.Ports {
-		endpointPorts = append(endpointPorts, corev1.EndpointPort{
-			Name: port.Name,
-			Port: port.Port,
-		})
-	}
-
-	return &corev1.Endpoints{
-		ObjectMeta: v1.ObjectMeta{
-			Name:        name,
-			Namespace:   cr.Namespace,
-			Labels:      cr.Spec.Template.Labels,
-			Annotations: cr.Spec.Template.Annotations,
-		},
-		Subsets: []corev1.EndpointSubset{
-			{
-				Addresses: endpointAddrs,
-				//NotReadyAddresses: endpointAddrs,
-				Ports: endpointPorts,
-			},
-		},
-	}
-}
-
-func newService(name string, cr *k8sv1alpha1.KeepAliveService) *corev1.Service {
-	portsSpec := []corev1.ServicePort{}
-
-	for _, portSpec := range cr.Spec.Ports {
-		portsSpec = append(portsSpec, *portSpec.DeepCopyServicePort())
-	}
-
-	svcType := corev1.ServiceTypeClusterIP
-	if cr.Spec.Type != "" {
-		svcType = cr.Spec.Type
-	}
-
-	return &corev1.Service{
-		ObjectMeta: v1.ObjectMeta{
-			Name:        name,
-			Namespace:   cr.Namespace,
-			Labels:      cr.Spec.Template.Labels,
-			Annotations: cr.Spec.Template.Annotations,
-		},
-		Spec: corev1.ServiceSpec{
-			Ports: portsSpec,
-			Type:  svcType,
-			//HealthCheckNodePort:      0,
-		},
-	}
 }
