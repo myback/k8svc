@@ -1,0 +1,45 @@
+apiVersion: k8s.myback.space/v1alpha1
+kind: KeepAliveService
+metadata:
+  name: redis
+  labels:
+    app: redis
+spec:
+  # type: LoadBalancer | ClusterIP (def) | NodePort  # TODO: [svc_name]-master for leader election and [svc_name]-headless
+  hosts:
+    - 10.0.100.100
+    - 10.0.102.100
+    - 10.0.104.100
+  ports:
+    - name: redis
+      protocol: TCP
+      port: 6379
+      # targetPort: 6379
+      # nodePort: 36379
+    - name: metrics
+      protocol: TCP
+      port: 9121
+      # targetPort: 19121
+  # template:
+  #   metadata:
+  #     name:
+  #     labels:
+  #     annotation:
+  #       prometheus.io/scrape: 'true'
+  #       prometheus.io/port: '9121'
+  # readinessProbe:
+    # httpGet:
+    #   path:
+    #   httpHeaders:
+    #   portsName:
+    #     - redis
+    # tcpSocket:
+    #   portsName:
+    #     - redis
+    # script:
+    #   - /usr/bin/redis-checks.sh ${ENDPOINT_IP} ${ENDPOINT_PORT_REDIS}
+    # timeout: 1000
+    # periodSeconds: 10
+    # periodExtend: 2
+    # failureThreshold: 3
+    # successThreshold: 1

@@ -1,0 +1,7 @@
+apiVersion: k8s.myback.space/v1alpha1
+kind: KeepAliveService
+metadata:
+  name: example-keepaliveservice
+spec:
+  # Add fields here
+  size: 3
