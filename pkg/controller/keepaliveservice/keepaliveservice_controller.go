@@ -158,7 +158,8 @@ func (r *ReconcileKeepAliveService) Reconcile(request reconcile.Request) (reconc
 
 	if foundSvc.Name != "" {
 		crdSvc := keepAliveServiceServiceSpec(k8SvcData.Spec)
-		if !serviceEqual(crdSvc, foundSvc.Spec) || crdSvc.Type != foundSvc.Spec.Type {
+		if !serviceEqual(crdSvc, foundSvc.Spec) || crdSvc.Type != foundSvc.Spec.Type ||
+			foundSvc.Spec.Selector != nil || foundSvc.Spec.ExternalIPs != nil {
 			reqLogger.Info("Update service state")
 			foundSvc.Spec.Ports = crdSvc.Ports
 			foundSvc.Spec.Type = crdSvc.Type
